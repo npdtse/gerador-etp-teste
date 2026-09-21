@@ -1317,11 +1317,35 @@ document.addEventListener('DOMContentLoaded', () => {
             if (!textarea) return 'N/P';
             let val = textarea.value.trim();
             if (!val) return 'N/P';
-            if (textarea.dataset.tableHtml || val.includes('[Tabela inserida pelo usuário:') || val.includes('<table')) {
-                const textWithoutMarker = val.replace(/\[Tabela inserida pelo usuário:[^\]]*\]/g, '').replace(/<table[\s\S]*?<\/table>/gi, '').trim();
-                return textWithoutMarker ? `${smartSubstring(textWithoutMarker, 80)} [Ver detalhamento em tabela inserida]` : '[Ver detalhamento em tabela inserida]';
+
+            // Captura o marcador sem consumir as quebras de linha do texto circundante
+            const markerRegex = /[═ \t]*\[\s*📊?\s*TABELA INSERIDA:[^\]]*\][═ \t]*|\[Tabela inserida pelo usuário:[^\]]*\]/gi;
+            const hasTable = textarea.dataset.tableHtml || markerRegex.test(val) || val.includes('<table');
+
+            if (hasTable) {
+                // Verifica se há texto além da tabela
+                const textWithoutTable = val
+                    .replace(markerRegex, '')
+                    .replace(/<table[\s\S]*?<\/table>/gi, '')
+                    .trim();
+
+                if (!textWithoutTable) {
+                    return '[Tabela detalhada no item]';
+                }
+
+                // Substitui a tabela exatamente no ponto onde ela foi inserida, preservando quebras de linha
+                let formatted = val
+                    .replace(markerRegex, '[Tabela detalhada]')
+                    .replace(/<table[\s\S]*?<\/table>/gi, '[Tabela detalhada]')
+                    .replace(/\r/g, '')
+                    .replace(/\n{3,}/g, '\n\n')
+                    .trim();
+
+                return smartSubstring(formatted, 160);
             }
-            return smartSubstring(val, 120);
+
+            let formatted = val.replace(/\r/g, '').replace(/\n{3,}/g, '\n\n').trim();
+            return smartSubstring(formatted, 160);
         }
 
         let rowsData = [];
