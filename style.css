@@ -1667,6 +1667,21 @@ body:not(.ai-features-disabled) .ai-help-button i.fa-book-open::before {
 }
 
 /* --- PRÉ-VISUALIZAÇÃO DE TABELAS DETECTADAS (OPÇÃO B) --- */
+.table-active-indicator {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    background-color: #fff3cd;
+    color: #856404;
+    border: 1px solid #ffeeba;
+    font-size: 0.78em;
+    font-weight: bold;
+    padding: 3px 8px;
+    border-radius: 4px;
+    margin-left: 8px;
+    vertical-align: middle;
+}
+
 .table-detected-preview {
     margin-top: 10px;
     border: 1px solid #b8daff;

@@ -1047,6 +1047,47 @@ document.addEventListener('DOMContentLoaded', () => {
         return html;
     }
 
+    function updateTableActiveBadge(textarea, show, infoText = '') {
+        const formGroup = textarea.closest('.form-group') || textarea.parentElement;
+        const label = formGroup ? formGroup.querySelector('label') : null;
+        if (!label) return;
+
+        let badge = label.querySelector('.table-active-indicator');
+        if (show) {
+            if (!badge) {
+                badge = document.createElement('span');
+                badge.className = 'table-active-indicator';
+                label.appendChild(badge);
+            }
+            badge.innerHTML = `<i class="fas fa-table"></i> Tabela Ativa (${infoText})`;
+        } else if (badge) {
+            badge.remove();
+        }
+    }
+
+    function removeTableFromTextarea(textarea) {
+        delete textarea.dataset.tableHtml;
+        delete textarea.dataset.tableMarker;
+        delete textarea.dataset.lastGoodValue;
+
+        const formGroup = textarea.closest('.form-group') || textarea.parentElement;
+        const previewContainer = formGroup ? formGroup.querySelector(`.table-detected-preview[data-target="${textarea.id}"]`) : null;
+        if (previewContainer) {
+            previewContainer.remove();
+        }
+
+        updateTableActiveBadge(textarea, false);
+
+        // Remove cirurgicamente qualquer versão do marcador preservando o texto anterior e posterior
+        textarea.value = textarea.value
+            .replace(/[═\s]*\[\s*📊?\s*TABELA INSERIDA:[^\]]*\][═\s]*/gi, '\n')
+            .replace(/\[Tabela inserida pelo usuário:[^\]]*\]/gi, '\n')
+            .replace(/\n{3,}/g, '\n\n')
+            .trim();
+        
+        debouncedSave();
+    }
+
     function renderTablePreviewForTextarea(textarea, tableData) {
         const formGroup = textarea.closest('.form-group') || textarea.parentElement;
         let previewContainer = formGroup.querySelector(`.table-detected-preview[data-target="${textarea.id}"]`);
@@ -1070,21 +1111,20 @@ document.addEventListener('DOMContentLoaded', () => {
 
             previewContainer.querySelector('.btn-table-remove').addEventListener('click', () => {
                 if (confirm("Tem certeza de que deseja excluir a tabela inserida neste campo?")) {
-                    previewContainer.remove();
-                    delete textarea.dataset.tableHtml;
-                    delete textarea.dataset.tableMarker;
-                    textarea.value = textarea.value.replace(/\[Tabela inserida pelo usuário:[^\]]*\]/g, '').replace(/\n\s*\n/g, '\n').trim();
-                    debouncedSave();
+                    removeTableFromTextarea(textarea);
                 }
             });
         }
 
         const bodyEl = previewContainer.querySelector('.table-preview-body');
         bodyEl.innerHTML = generateHtmlTableFromMatrix(tableData.rows);
+
+        const rCount = tableData.rows.length;
+        const cCount = tableData.rows[0]?.length || 0;
+        updateTableActiveBadge(textarea, true, `${rCount}x${cCount}`);
     }
 
     function initTablePasteHandler() {
-        // Intercepta a colagem (Caso C: Bloqueio de múltiplas tabelas)
         document.body.addEventListener('paste', (e) => {
             const textarea = e.target.closest('textarea');
             if (!textarea) return;
@@ -1100,7 +1140,6 @@ document.addEventListener('DOMContentLoaded', () => {
             if (tableData) {
                 e.preventDefault();
 
-                // Caso C: Se já existe uma tabela no campo, alerta e impede a inserção de outra
                 if (textarea.dataset.tableHtml) {
                     alert("Atenção: Este campo já possui uma tabela inserida.\n\nCada campo comporta apenas uma tabela por vez. Para substituí-la, clique primeiro em 'Excluir Tabela' logo abaixo ou consolide as informações em uma única planilha no Excel antes de colar.");
                     return;
@@ -1111,52 +1150,54 @@ document.addEventListener('DOMContentLoaded', () => {
 
                 const rowCount = tableData.rows.length;
                 const colCount = tableData.rows[0]?.length || 0;
-                const marker = `[Tabela inserida pelo usuário: ${rowCount} linhas x ${colCount} colunas]`;
+                const marker = `════ [ 📊 TABELA INSERIDA: ${rowCount} linhas x ${colCount} colunas ] ════`;
                 textarea.dataset.tableMarker = marker;
 
-                const currentVal = textarea.value.trim();
-                if (currentVal) {
-                    textarea.value = `${currentVal}\n\n${marker}`;
-                } else {
-                    textarea.value = marker;
-                }
+                // Inserção exata na posição do cursor do usuário
+                const startPos = textarea.selectionStart ?? textarea.value.length;
+                const endPos = textarea.selectionEnd ?? textarea.value.length;
+                const currentVal = textarea.value;
+
+                const textBefore = currentVal.substring(0, startPos);
+                const textAfter = currentVal.substring(endPos);
+
+                const prefix = (textBefore.length > 0 && !textBefore.endsWith('\n')) ? '\n\n' : (textBefore.endsWith('\n') && !textBefore.endsWith('\n\n') ? '\n' : '');
+                const suffix = (textAfter.length > 0 && !textAfter.startsWith('\n')) ? '\n\n' : (textAfter.startsWith('\n') && !textAfter.startsWith('\n\n') ? '\n' : '');
+
+                textarea.value = `${textBefore}${prefix}${marker}${suffix}${textAfter}`;
+
+                const newCursorPos = textBefore.length + prefix.length + marker.length;
+                textarea.setSelectionRange(newCursorPos, newCursorPos);
+
+                textarea.dataset.lastGoodValue = textarea.value;
 
                 renderTablePreviewForTextarea(textarea, tableData);
                 debouncedSave();
             }
         });
 
-        // Intercepta a digitação/exclusão (Caso B: Confirmação e exclusão total limpa)
         document.body.addEventListener('input', (e) => {
             const textarea = e.target.closest('textarea');
             if (!textarea || !textarea.dataset.tableHtml) return;
 
-            const expectedMarker = textarea.dataset.tableMarker || '[Tabela inserida pelo usuário:';
+            const marker = textarea.dataset.tableMarker || '[TABELA INSERIDA:';
 
-            // Se o usuário apagou ou modificou a marcação da tabela
-            if (!textarea.value.includes(expectedMarker)) {
-                const confirmRemoval = confirm("Tem certeza de que deseja excluir a tabela inserida neste campo?");
+            if (!textarea.value.includes(marker)) {
+                setTimeout(() => {
+                    const confirmRemoval = confirm("Tem certeza de que deseja excluir a tabela inserida neste campo?");
 
-                if (confirmRemoval) {
-                    // Confirma: limpa completamente os resquícios da marcação e remove o preview
-                    delete textarea.dataset.tableHtml;
-                    delete textarea.dataset.tableMarker;
-
-                    const formGroup = textarea.closest('.form-group') || textarea.parentElement;
-                    const previewContainer = formGroup.querySelector(`.table-detected-preview[data-target="${textarea.id}"]`);
-                    if (previewContainer) {
-                        previewContainer.remove();
+                    if (confirmRemoval) {
+                        removeTableFromTextarea(textarea);
+                    } else {
+                        if (textarea.dataset.lastGoodValue) {
+                            textarea.value = textarea.dataset.lastGoodValue;
+                        } else {
+                            textarea.value = textarea.dataset.tableMarker ? `${textarea.value}\n\n${textarea.dataset.tableMarker}` : textarea.value;
+                        }
                     }
-
-                    // Limpa qualquer fragmento que tenha sobrado do marcador
-                    textarea.value = textarea.value.replace(/\[?Tabela inserida pelo usuário:[^\]]*\]?/gi, '').replace(/\n\s*\n/g, '\n').trim();
-                    debouncedSave();
-                } else {
-                    // Cancela: restaura a marcação intacta no campo
-                    const restoredMarker = textarea.dataset.tableMarker || '[Tabela inserida pelo usuário]';
-                    const currentClean = textarea.value.replace(/\[?Tabela inserida pelo usuário:[^\]]*\]?/gi, '').trim();
-                    textarea.value = currentClean ? `${currentClean}\n\n${restoredMarker}` : restoredMarker;
-                }
+                }, 20);
+            } else {
+                textarea.dataset.lastGoodValue = textarea.value;
             }
         });
     }
@@ -1660,7 +1701,8 @@ document.addEventListener('DOMContentLoaded', () => {
                             if (tableData) {
                                 const rowCount = tableData.rows.length;
                                 const colCount = tableData.rows[0]?.length || 0;
-                                input.dataset.tableMarker = `[Tabela inserida pelo usuário: ${rowCount} linhas x ${colCount} colunas]`;
+                                input.dataset.tableMarker = `════ [ 📊 TABELA INSERIDA: ${rowCount} linhas x ${colCount} colunas ] ════`;
+                                input.dataset.lastGoodValue = input.value;
                                 renderTablePreviewForTextarea(input, tableData);
                             }
                         }
@@ -1687,6 +1729,7 @@ document.addEventListener('DOMContentLoaded', () => {
                                         const rowCount = tableData.rows.length;
                                         const colCount = tableData.rows[0]?.length || 0;
                                         input.dataset.tableMarker = `[Tabela inserida pelo usuário: ${rowCount} linhas x ${colCount} colunas]`;
+                                        input.dataset.lastGoodValue = input.value;
                                         renderTablePreviewForTextarea(input, tableData);
                                     }
                                 }
@@ -1790,6 +1833,21 @@ document.addEventListener('DOMContentLoaded', () => {
         };
     }
 
+    function formatConsolidatedDisplayValue(fieldData) {
+        if (fieldData.status === 'unfilled' || fieldData.status === 'inactive') {
+            return fieldData.value;
+        }
+        if (!fieldData.tableHtml) {
+            return `<span style="white-space: pre-wrap;">${fieldData.value}</span>`;
+        }
+        
+        const markerRegex = /[═\s]*\[\s*📊?\s*TABELA INSERIDA:[^\]]*\][═\s]*|\[Tabela inserida pelo usuário:[^\]]*\]/gi;
+        const parts = fieldData.value.split(markerRegex);
+        const before = parts[0]?.trim() ? `<span style="white-space: pre-wrap;">${parts[0].trim()}</span><br><br>` : '';
+        const after = parts[1]?.trim() ? `<br><span style="white-space: pre-wrap;">${parts[1].trim()}</span>` : '';
+        return `${before}<div style="margin-top: 10px; margin-bottom: 10px; overflow-x: auto;">${fieldData.tableHtml}</div>${after}`;
+    }
+
     function updateConsolidatedETP() {
         const container = document.getElementById('consolidation_container');
         if (!container) return;
@@ -1804,14 +1862,11 @@ document.addEventListener('DOMContentLoaded', () => {
             if (!chapterElement) return;
 
             const navButton = document.querySelector(`.tab-button[data-tab-target="${tabId}"]`);
-
-            // --- INÍCIO DA LÓGICA MODIFICADA ---
             const isInactive = navButton && navButton.classList.contains('inactive');
 
             if (isInactive && !isSimplificado) {
-                return; // Comportamento original: Pula se inativo e NÃO for simplificado.
+                return;
             }
-            // --- FIM DA LÓGICA MODIFICADA ---
 
             const details = document.createElement('details');
             details.className = 'consolidation-chapter';
@@ -1828,16 +1883,14 @@ document.addEventListener('DOMContentLoaded', () => {
             const contentDiv = document.createElement('div');
             contentDiv.className = 'consolidation-content';
 
-            // --- INÍCIO DA LÓGICA MODIFICADA ---
             if (isInactive && isSimplificado) {
                 const p = document.createElement('p');
                 p.innerHTML = '<i>Não se aplica ao ETP Simplificado.</i>';
                 contentDiv.appendChild(p);
                 details.appendChild(contentDiv);
                 container.appendChild(details);
-                return; // Pula para o próximo capítulo do loop
+                return;
             }
-            // --- FIM DA LÓGICA MODIFICADA ---
 
             const table = document.createElement('table');
             table.className = 'consolidation-table';
@@ -1850,7 +1903,7 @@ document.addEventListener('DOMContentLoaded', () => {
                     ? document.getElementById('c3_1_solucao_escolhida_simplificada')
                     : document.getElementById('c3_1_solucao_escolhida');
                 const fieldData = getFieldData(input);
-                tr.innerHTML = `<td>${labelText}</td><td><span class="consolidation-value-${fieldData.status}">${fieldData.value}</span></td>`;
+                tr.innerHTML = `<td>${labelText}</td><td><span class="consolidation-value-${fieldData.status}">${formatConsolidatedDisplayValue(fieldData)}</span></td>`;
                 tbody.appendChild(tr);
             }
 
@@ -1894,7 +1947,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
                     const tr = document.createElement('tr');
                     const fieldData = getFieldData(input);
-                    tr.innerHTML = `<td>${labelText}</td><td><span class="consolidation-value-${fieldData.status}">${fieldData.value}</span></td>`;
+                    tr.innerHTML = `<td>${labelText}</td><td><span class="consolidation-value-${fieldData.status}">${formatConsolidatedDisplayValue(fieldData)}</span></td>`;
                     tbody.appendChild(tr);
                 });
 
@@ -1936,7 +1989,7 @@ document.addEventListener('DOMContentLoaded', () => {
                                     subTdValue.textContent = checkedItems || '[Nenhum item selecionado]';
                                 } else {
                                     const fieldData = getFieldData(subInput);
-                                    subTdValue.innerHTML = `<span class="consolidation-value-${fieldData.status}">${fieldData.value}</span>`;
+                                    subTdValue.innerHTML = `<span class="consolidation-value-${fieldData.status}">${formatConsolidatedDisplayValue(fieldData)}</span>`;
                                 }
                                 subTr.appendChild(subTdLabel);
                                 subTr.appendChild(subTdValue);
@@ -2376,27 +2429,38 @@ document.addEventListener('DOMContentLoaded', () => {
                             children: [new TextRun({ text: sub.label, bold: true, size: 22, ...FONT_STYLE })]
                         }));
 
+                        const markerRegex = /[═\s]*\[\s*📊?\s*TABELA INSERIDA:[^\]]*\][═\s]*|\[Tabela inserida pelo usuário:[^\]]*\]/gi;
                         const rawTableHtml = sub.tableHtml || (sub.value && sub.value.includes('<table') ? sub.value : null);
-                        const cleanText = sub.value ? sub.value.replace(/\[Tabela inserida pelo usuário:[^\]]*\]/g, '').replace(/<table[\s\S]*?<\/table>/gi, '').trim() : '';
 
-                        if (cleanText) {
-                            docChildren.push(new Paragraph({
-                                spacing: { after: 100 },
-                                indent: { left: INDENT_LEVEL_2 },
-                                children: [new TextRun({ text: cleanText, size: 22, ...FONT_STYLE })]
-                            }));
-                        }
+                        if (rawTableHtml && markerRegex.test(sub.value)) {
+                            const parts = sub.value.split(markerRegex);
+                            const beforeText = parts[0]?.trim();
+                            const afterText = parts[1]?.trim();
 
-                        if (rawTableHtml) {
-                            const tableEl = createDocxTableFromHtml(rawTableHtml);
-                            if (tableEl) {
-                                docChildren.push(tableEl);
+                            if (beforeText) {
+                                docChildren.push(new Paragraph({
+                                    spacing: { before: 100, after: 100 },
+                                    indent: { left: INDENT_LEVEL_2 },
+                                    children: [new TextRun({ text: beforeText, size: 22, ...FONT_STYLE })]
+                                }));
                             }
-                        } else if (!cleanText) {
+
+                            const tableEl = createDocxTableFromHtml(rawTableHtml);
+                            if (tableEl) docChildren.push(tableEl);
+
+                            if (afterText) {
+                                docChildren.push(new Paragraph({
+                                    spacing: { before: 100, after: 150 },
+                                    indent: { left: INDENT_LEVEL_2 },
+                                    children: [new TextRun({ text: afterText, size: 22, ...FONT_STYLE })]
+                                }));
+                            }
+                        } else {
+                            const cleanText = sub.value ? sub.value.replace(markerRegex, '').trim() : '';
                             docChildren.push(new Paragraph({
                                 spacing: { after: 150 },
                                 indent: { left: INDENT_LEVEL_2 },
-                                children: [new TextRun({ text: sub.value, size: 22, ...FONT_STYLE })]
+                                children: [new TextRun({ text: cleanText || sub.value, size: 22, ...FONT_STYLE })]
                             }));
                         }
                     });
@@ -2539,14 +2603,14 @@ document.addEventListener('DOMContentLoaded', () => {
                 let text = fieldObj.value || '';
                 const tableHtml = fieldObj.tableHtml;
 
-                if (tableHtml) {
+                const markerRegex = /[═\s]*\[\s*📊?\s*TABELA INSERIDA:[^\]]*\][═\s]*|\[Tabela inserida pelo usuário:[^\]]*\]/gi;
+
+                if (tableHtml && markerRegex.test(text)) {
                     const cleanTable = sanitizeHtmlForSei(tableHtml);
-                    if (text.includes('[Tabela inserida pelo usuário:')) {
-                        const textBefore = text.replace(/\[Tabela inserida pelo usuário:[^\]]*\]/g, '').trim();
-                        const safeText = textBefore ? sanitizeHtmlForSei(textBefore) + '<br>' : '';
-                        return `${safeText}${cleanTable}`;
-                    }
-                    return `${sanitizeHtmlForSei(text)}<br>${cleanTable}`;
+                    const parts = text.split(markerRegex);
+                    const beforeHtml = parts[0] ? sanitizeHtmlForSei(parts[0].trim()) + '<br>' : '';
+                    const afterHtml = parts[1] ? '<br>' + sanitizeHtmlForSei(parts[1].trim()) : '';
+                    return `${beforeHtml}${cleanTable}${afterHtml}`;
                 }
 
                 return sanitizeHtmlForSei(text);
