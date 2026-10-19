@@ -91,7 +91,11 @@ document.addEventListener('DOMContentLoaded', () => {
     }
 
     function formatSEIProcess(input) {
+        if (!input) return;
         let value = input.value.replace(/\D/g, '');
+        if (value.length > 16) {
+            value = value.substring(0, 16);
+        }
         let formattedValue = '';
         if (value.length > 0) formattedValue = value.substring(0, 4);
         if (value.length > 4) formattedValue += '.' + value.substring(4, 6);
@@ -99,6 +103,25 @@ document.addEventListener('DOMContentLoaded', () => {
         if (value.length > 15) formattedValue += '-' + value.substring(15, 16);
         input.value = formattedValue;
     }
+    window.formatSEIProcess = formatSEIProcess;
+
+    function formatBRLCurrency(input) {
+        if (!input) return;
+        let value = input.value.replace(/\D/g, '');
+        if (!value) {
+            input.value = '';
+            return;
+        }
+        if (value.length > 14) {
+            value = value.substring(0, 14);
+        }
+        const floatVal = parseInt(value, 10) / 100;
+        input.value = floatVal.toLocaleString('pt-BR', {
+            minimumFractionDigits: 2,
+            maximumFractionDigits: 2
+        });
+    }
+    window.formatBRLCurrency = formatBRLCurrency;
 
     function stripHtml(html) {
         if (!html) return "";
@@ -626,26 +649,31 @@ document.addEventListener('DOMContentLoaded', () => {
 
     // --- LÓGICA DE PROGRESSO ---
 
-    function isFieldLogicallyActive(input) {
-        const tabContent = input.closest('.tab-content');
+    function isFieldLogicallyActive(element) {
+        if (!element) return false;
+
+        const tabContent = element.closest('.tab-content');
         if (tabContent) {
+            if (tabContent.id === 'inicio' || tabContent.id === 'consolidacao') {
+                return false;
+            }
             const navButton = document.querySelector(`.tab-button[data-tab-target="${tabContent.id}"]`);
-            if (navButton && navButton.classList.contains('inactive')) {
+            if (navButton && (navButton.classList.contains('inactive') || window.getComputedStyle(navButton).display === 'none')) {
                 return false;
             }
         }
 
         const isSimplificadoMode = document.body.classList.contains('etp-simplificado-mode');
 
-        if (isSimplificadoMode && input.closest('.simplificado-hide')) {
+        if (isSimplificadoMode && element.closest('.simplificado-hide')) {
             return false;
         }
 
-        if (!isSimplificadoMode && input.closest('.completo-hide')) {
+        if (!isSimplificadoMode && element.closest('.completo-hide')) {
             return false;
         }
 
-        let current = input;
+        let current = element;
         while (current && !current.classList.contains('tab-content')) {
             if (current.style.display === 'none') {
                 return false;
@@ -659,13 +687,21 @@ document.addEventListener('DOMContentLoaded', () => {
     function calculateProgress(scopeElement) {
         if (!scopeElement) return { filled: 0, total: 0, percentage: 0 };
 
-        const inputs = scopeElement.querySelectorAll('input[type="text"]:not([readonly]), input[type="number"]:not([readonly]), textarea:not([readonly]), select, input[type="checkbox"], input[type="radio"]');
+        // Caso especial: Capítulo 5 com "Não se aplica" marcado equivale a 100% de conclusão
+        if (scopeElement.id === 'cap5' && document.getElementById('c5_nao_se_aplica')?.checked) {
+            return { filled: 1, total: 1, percentage: 100 };
+        }
+
         let total = 0;
         let filled = 0;
         const processedRadioGroups = new Set();
 
+        // 1. Inputs regulares (text, number, textarea, select, radio e checkboxes isolados)
+        const inputs = scopeElement.querySelectorAll('input[type="text"]:not([readonly]), input[type="number"]:not([readonly]), textarea:not([readonly]), select, input[type="checkbox"], input[type="radio"]');
+
         inputs.forEach(input => {
-            if (input.id === 'c5_nao_se_aplica') {
+            // Ignora o toggle do Cap 5 (tratado separadamente) e checkboxes internos da lista de anexos
+            if (input.id === 'c5_nao_se_aplica' || input.closest('.scrollable-checkbox-group')) {
                 return;
             }
 
@@ -683,9 +719,21 @@ document.addEventListener('DOMContentLoaded', () => {
                     let isFilled = (input.type === 'checkbox') ? input.checked : (input.value && input.value.trim() !== '');
 
                     if (isFilled) {
-                        if (input.id === 'etp_titulo' && input.value.startsWith("Será gerado")) return;
+                        if (input.id === 'etp_titulo' && (input.value.startsWith("Será gerado") || input.value.startsWith("Gerando"))) return;
                         filled++;
                     }
+                }
+            }
+        });
+
+        // 2. Grupos de itens relacionados nos Anexos (item A.X.3) - conta como 1 único campo obrigatório
+        const scrollableGroups = scopeElement.querySelectorAll('.scrollable-checkbox-group');
+        scrollableGroups.forEach(group => {
+            if (isFieldLogicallyActive(group)) {
+                total++;
+                const hasAnyChecked = group.querySelectorAll('input[type="checkbox"]:checked').length > 0;
+                if (hasAnyChecked) {
+                    filled++;
                 }
             }
         });
@@ -695,51 +743,32 @@ document.addEventListener('DOMContentLoaded', () => {
     }
 
     function updateMainProgressBar() {
+        const tabOrder = ['identificacao', 'cap1', 'cap2', 'cap3', 'cap4', 'cap5', 'cap6', 'cap7', 'cap8', 'cap9', 'anexos'];
         let totalFields = 0;
         let filledFields = 0;
-        const processedRadioGroups = new Set();
 
-        document.querySelectorAll('.tab-content:not(#consolidacao)').forEach(tab => {
-            const navButton = document.querySelector(`.tab-button[data-tab-target="${tab.id}"]`);
-            if (navButton && navButton.classList.contains('inactive')) {
+        tabOrder.forEach(tabId => {
+            const tabElement = document.getElementById(tabId);
+            if (!tabElement) return;
+
+            const navButton = document.querySelector(`.tab-button[data-tab-target="${tabId}"]`);
+            if (navButton && (navButton.classList.contains('inactive') || window.getComputedStyle(navButton).display === 'none')) {
                 return;
             }
 
-            if (tab.id === 'cap5' && document.getElementById('c5_nao_se_aplica')?.checked) return;
-
-            const inputs = tab.querySelectorAll('input[type="text"]:not([readonly]), input[type="number"]:not([readonly]), textarea:not([readonly]), select, input[type="checkbox"], input[type="radio"]');
-            inputs.forEach(input => {
-                if (input.id === 'c5_nao_se_aplica') return;
-
-                if (isFieldLogicallyActive(input)) {
-                    if (input.type === 'radio') {
-                        const groupName = input.name;
-                        if (processedRadioGroups.has(groupName)) return;
-                        processedRadioGroups.add(groupName);
-                        totalFields++;
-                        if (document.querySelector(`input[name="${groupName}"]:checked`)) {
-                            filledFields++;
-                        }
-                    } else {
-                        totalFields++;
-                        let isFilled = (input.type === 'checkbox') ? input.checked : (input.value && input.value.trim() !== '');
-                        if (isFilled) {
-                            if (input.id === 'etp_titulo' && input.value.startsWith("Será gerado")) return;
-                            filledFields++;
-                        }
-                    }
-                }
-            });
+            const tabProgress = calculateProgress(tabElement);
+            totalFields += tabProgress.total;
+            filledFields += tabProgress.filled;
         });
 
         const percentage = totalFields > 0 ? (filledFields / totalFields) * 100 : 0;
-        mainProgressBarEl.style.width = percentage + '%';
+        mainProgressBarEl.style.width = Math.round(percentage) + '%';
         mainProgressTextEl.textContent = Math.round(percentage) + '%';
     }
 
     function updateTabProgressBar() {
         const activeTab = document.querySelector('.tab-content.active');
-        if (!activeTab || activeTab.id === 'consolidacao') {
+        if (!activeTab || activeTab.id === 'consolidacao' || activeTab.id === 'inicio') {
             tabProgressWrapper.style.display = 'none';
             return;
         }
@@ -751,7 +780,7 @@ document.addEventListener('DOMContentLoaded', () => {
         tabProgressTextEl.textContent = '0%';
 
         setTimeout(() => {
-            tabProgressBarEl.style.width = progress.percentage + '%';
+            tabProgressBarEl.style.width = Math.round(progress.percentage) + '%';
             tabProgressTextEl.textContent = Math.round(progress.percentage) + '%';
         }, 50);
     }
@@ -764,15 +793,15 @@ document.addEventListener('DOMContentLoaded', () => {
 
     function checkChapterCompletion(tabId) {
         const tabElement = document.getElementById(tabId);
-        if (!tabElement || tabId === 'consolidacao') return false;
+        if (!tabElement || tabId === 'consolidacao' || tabId === 'inicio') return false;
 
         const navButton = document.querySelector(`.tab-button[data-tab-target="${tabId}"]`);
-        if (navButton && navButton.classList.contains('inactive')) return false;
+        if (navButton && (navButton.classList.contains('inactive') || window.getComputedStyle(navButton).display === 'none')) return false;
 
         if (tabId === 'cap5' && document.getElementById('c5_nao_se_aplica')?.checked) return true;
 
         const progress = calculateProgress(tabElement);
-        return progress.total > 0 && progress.percentage === 100;
+        return progress.total > 0 && Math.round(progress.percentage) === 100;
     }
 
     function updateAllChapterCompletionStatus() {
@@ -788,43 +817,246 @@ document.addEventListener('DOMContentLoaded', () => {
 
     // --- LÓGICA DE IA ---
 
+    function parseAiErrorMessage(error) {
+        if (!error) {
+            return {
+                title: "Falha Inesperada",
+                message: "Não foi possível obter uma resposta da IA. Aguarde alguns instantes e tente novamente.",
+                icon: "fa-triangle-exclamation"
+            };
+        }
+
+        if (error.code === 'MISSING_KEY' || error.message?.includes("Chave de API não configurada")) {
+            return {
+                title: "Chave de API Ausente",
+                message: "A chave de acesso à IA não está configurada neste navegador. Acesse as configurações para inseri-la.",
+                icon: "fa-key",
+                showSettingsBtn: true
+            };
+        }
+
+        if (error.isTimeout || error.name === 'AbortError') {
+            return {
+                title: "Tempo Limite Excedido",
+                message: "A IA demorou mais de 30 segundos para responder e a conexão foi interrompida para evitar travamento. Verifique sua conexão e tente novamente.",
+                icon: "fa-hourglass-end"
+            };
+        }
+
+        if (error.isNetworkError || error.message?.includes("Failed to fetch") || error.name === 'TypeError') {
+            return {
+                title: "Falha de Conexão com o Servidor de IA",
+                message: "Não foi possível alcançar os servidores da Groq. Verifique sua conexão com a internet ou se a rede/VPN institucional está restringindo conexões externas a 'api.groq.com'.",
+                icon: "fa-wifi"
+            };
+        }
+
+        const status = error.status;
+        const rawMessage = (error.rawMessage || error.message || "").toLowerCase();
+
+        if (status === 429 || rawMessage.includes("rate limit") || rawMessage.includes("tokens")) {
+            let tempoFormatado = "";
+            const regexMinSec = /try again in (\d+m)?(\d+(\.\d+)?s)?/i;
+            const match = (error.rawMessage || error.message || "").match(regexMinSec);
+
+            if (match) {
+                const minutos = match[1] ? match[1].replace('m', '') : null;
+                const segundos = match[2] ? Math.ceil(parseFloat(match[2].replace('s', ''))) : null;
+                if (minutos && segundos) {
+                    tempoFormatado = ` Aproximadamente ${minutos} minuto(s) e ${segundos} segundo(s).`;
+                } else if (minutos) {
+                    tempoFormatado = ` Aproximadamente ${minutos} minuto(s).`;
+                } else if (segundos) {
+                    tempoFormatado = ` Aproximadamente ${segundos} segundo(s).`;
+                }
+            }
+
+            const orientacaoEspera = tempoFormatado
+                ? `O provedor solicita que você aguarde:${tempoFormatado}`
+                : "Os limites de tokens por minuto da sua conta foram atingidos. Aguarde cerca de 1 a 2 minutos para tentar novamente.";
+
+            return {
+                title: "Limite Temporário de Requisições Atingido",
+                message: `O volume de texto processado excedeu a capacidade momentânea do modelo. ${orientacaoEspera}`,
+                icon: "fa-clock"
+            };
+        }
+
+        if (status === 401 || rawMessage.includes("invalid api key") || rawMessage.includes("unauthorized")) {
+            return {
+                title: "Chave de API Inválida",
+                message: "A chave de API cadastrada foi recusada pelo provedor. Verifique se a chave foi copiada corretamente ou gere uma nova no console da Groq.",
+                icon: "fa-lock",
+                showSettingsBtn: true
+            };
+        }
+
+        if (status === 403 || status === 404 || rawMessage.includes("model") || rawMessage.includes("enterprise")) {
+            return {
+                title: "Modelo de IA Indisponível no seu Plano",
+                message: "O modelo solicitado requer plano Enterprise ou foi descontinuado. Acesse as configurações de IA e selecione a opção de modelos padrão recomendados.",
+                icon: "fa-ban",
+                showSettingsBtn: true
+            };
+        }
+
+        if (status >= 500) {
+            return {
+                title: "Instabilidade no Provedor Groq",
+                message: "Os servidores do provedor de IA estão momentaneamente instáveis ou passando por manutenção rápida. Tente novamente em instantes.",
+                icon: "fa-server"
+            };
+        }
+
+        return {
+            title: "Erro ao Processar Requisição da IA",
+            message: error.message || "Ocorreu um erro inesperado ao se comunicar com a IA.",
+            icon: "fa-circle-exclamation"
+        };
+    }
+
+    function renderAiErrorCard(errorInfo) {
+        const btnHtml = errorInfo.showSettingsBtn
+            ? `<button type="button" class="ai-error-action-btn" onclick="document.getElementById('btnAbrirConfigIA').click()"><i class="fas fa-cog"></i> Abrir Habilitação de IA</button>`
+            : '';
+
+        return `
+            <div class="ai-error-box">
+                <div class="ai-error-header">
+                    <i class="fas ${errorInfo.icon}"></i>
+                    <span class="ai-error-title">${errorInfo.title}</span>
+                </div>
+                <div class="ai-error-message">${errorInfo.message}</div>
+                ${btnHtml}
+            </div>
+        `;
+    }
+
+    function formatMarkdownToHtml(markdown) {
+        if (!markdown) return "";
+
+        let html = markdown
+            .replace(/&/g, "&amp;")
+            .replace(/</g, "&lt;")
+            .replace(/>/g, "&gt;");
+
+        html = html.replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>');
+        html = html.replace(/\*(.+?)\*/g, '<em>$1</em>');
+
+        const lines = html.split('\n');
+        let processedLines = [];
+        let inBlockquote = false;
+        let blockquoteContent = [];
+
+        for (let i = 0; i < lines.length; i++) {
+            const line = lines[i];
+            const trimmed = line.trim();
+
+            if (trimmed.startsWith('&gt;')) {
+                inBlockquote = true;
+                const cleanQuoteLine = trimmed.replace(/^&gt;\s?/, '');
+                blockquoteContent.push(cleanQuoteLine);
+            } else {
+                if (inBlockquote) {
+                    processedLines.push(`<blockquote>${blockquoteContent.join('<br>')}</blockquote>`);
+                    blockquoteContent = [];
+                    inBlockquote = false;
+                }
+                processedLines.push(line);
+            }
+        }
+
+        if (inBlockquote) {
+            processedLines.push(`<blockquote>${blockquoteContent.join('<br>')}</blockquote>`);
+        }
+
+        const rawBlocks = processedLines.join('\n').split(/\n\s*\n/);
+        const finalHtml = rawBlocks.map(block => {
+            const b = block.trim();
+            if (!b) return '';
+            if (b.startsWith('<blockquote>') || b.startsWith('<ul>') || b.startsWith('<ol>')) {
+                return b;
+            }
+            return `<p>${b.replace(/\n/g, '<br>')}</p>`;
+        }).filter(Boolean).join('');
+
+        return finalHtml;
+    }
+
     async function makeAIRequest(prompt, temperature, max_tokens, attempt = 0) {
         const currentApiKey = aiConfig.apiKey || GROQ_API_KEY;
         if (!currentApiKey) {
-            throw new Error("Chave de API não configurada. Por favor, configure sua chave no menu de Configurações de IA.");
+            const err = new Error("Chave de API não configurada. Por favor, configure sua chave no menu de Configurações de IA.");
+            err.code = 'MISSING_KEY';
+            throw err;
         }
         const modelsToTry = aiConfig.modelSelectionMode === 'custom' && aiConfig.customModels.length > 0
             ? aiConfig.customModels
             : LLM_MODELS_PRIORITY;
 
         if (attempt >= modelsToTry.length) {
-            throw new Error("Todos os modelos LLM configurados falharam ou não estão disponíveis.");
+            const err = new Error("Todos os modelos de IA disponíveis esgotaram os limites ou falharam.");
+            err.status = 429;
+            throw err;
         }
         const model = modelsToTry[attempt];
         console.log(`Tentando requisição com modelo: ${model} (Tentativa ${attempt + 1})`);
+
+        const controller = new AbortController();
+        const timeoutId = setTimeout(() => controller.abort(), 30000);
 
         try {
             const response = await fetch(GROQ_API_URL, {
                 method: 'POST',
                 headers: { 'Authorization': `Bearer ${currentApiKey}`, 'Content-Type': 'application/json' },
-                body: JSON.stringify({ model: model, messages: [{ role: "user", content: prompt }], temperature: temperature, max_tokens: max_tokens })
+                body: JSON.stringify({ model: model, messages: [{ role: "user", content: prompt }], temperature: temperature, max_tokens: max_tokens }),
+                signal: controller.signal
             });
 
+            clearTimeout(timeoutId);
+
             if (!response.ok) {
-                const errorBody = await response.text();
-                console.error(`Erro com modelo ${model}: ${response.status} ${response.statusText}`, errorBody);
-                if (response.status === 429 || response.status >= 500) {
+                const errorText = await response.text();
+                console.error(`Erro com modelo ${model}: ${response.status} ${response.statusText}`, errorText);
+
+                let parsedMessage = errorText;
+                try {
+                    const parsedJson = JSON.parse(errorText);
+                    if (parsedJson?.error?.message) {
+                        parsedMessage = parsedJson.error.message;
+                    }
+                } catch (e) {
+                    // Mantém o texto bruto caso não seja JSON
+                }
+
+                if ((response.status === 429 || response.status >= 500) && attempt + 1 < modelsToTry.length) {
                     return makeAIRequest(prompt, temperature, max_tokens, attempt + 1);
                 }
-                throw new Error(`Erro ${response.status} com ${model}: ${response.statusText} - ${errorBody}`);
+
+                const err = new Error(parsedMessage);
+                err.status = response.status;
+                err.rawMessage = parsedMessage;
+                err.model = model;
+                throw err;
             }
+
             const data = await response.json();
             return { data, modelUsed: model };
         } catch (error) {
+            clearTimeout(timeoutId);
+
+            if (error.name === 'AbortError') {
+                error.isTimeout = true;
+            } else if (error instanceof TypeError) {
+                error.isNetworkError = true;
+            }
+
             console.error(`Exceção ao tentar modelo ${model}:`, error);
-            if (attempt + 1 < modelsToTry.length) {
+
+            if (attempt + 1 < modelsToTry.length && (error.status === 429 || error.status >= 500 || error.isNetworkError)) {
                 return makeAIRequest(prompt, temperature, max_tokens, attempt + 1);
             }
+
             throw error;
         }
     }
@@ -836,30 +1068,29 @@ document.addEventListener('DOMContentLoaded', () => {
         const etpUnidade = document.getElementById('etp_unidade_demandante')?.value.trim();
 
         if (!cap1_1 && !cap1_2) {
-            alert("Preencha ao menos a 'Indicação da necessidade' ou 'Situações/problemas' no Capítulo 1 para gerar o título.");
+            alert("Preencha ao menos a 'Indicação da necessidade' ou 'Situações/problemas' no Capítulo 1 para que a IA possa sugerir um título condizente.");
             return;
         }
 
         const titleField = document.getElementById('etp_titulo');
         const generateButton = document.querySelector('button[data-action="generate-title-ai"]');
         if (generateButton) generateButton.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Gerando...';
-        if (titleField) titleField.value = "Gerando título com IA...";
+        if (titleField) titleField.value = "Gerando sugestão de título...";
 
-        // Monta o prompt usando os dados do usuário + o sufixo definido em prompts.js
         const userContext = `Unidade Demandante: "${etpUnidade || 'Não informada'}"\nIndicação da Necessidade: "${cap1_1 || 'Não preenchido'}"\nSituações/Problemas enfrentados: "${cap1_2 || 'Não preenchido'}"\nPublico Alvo: "${cap1_5 || 'Não preenchido'}"\n`;
-
         const titlePrompt = userContext + TITLE_GENERATION_PROMPT_SUFFIX;
 
         try {
             const result = await makeAIRequest(titlePrompt, 0.5, 60);
             const suggestedTitle = result.data.choices[0]?.message?.content.trim().replace(/^"|"$/g, '');
             if (titleField) {
-                titleField.value = suggestedTitle || "Não foi possível gerar o título.";
+                titleField.value = suggestedTitle || "";
             }
         } catch (error) {
             console.error("Erro ao gerar título com IA:", error);
-            if (titleField) titleField.value = "Erro ao gerar título.";
-            alert(`Erro ao gerar título: ${error.message}`);
+            if (titleField) titleField.value = "";
+            const errInfo = parseAiErrorMessage(error);
+            alert(`${errInfo.title}\n\n${errInfo.message}`);
         } finally {
             if (generateButton) generateButton.innerHTML = `<i class="fas fa-wand-magic-sparkles"></i> Gerar Título`;
             debouncedSave();
@@ -959,12 +1190,14 @@ document.addEventListener('DOMContentLoaded', () => {
 
                     try {
                         const result = await makeAIRequest(prompt, 0.3, 1500);
-                        aiComplianceAnalysisEl.textContent = result.data.choices[0]?.message?.content.trim() || "Não foi possível realizar a avaliação.";
+                        const rawResponse = result.data.choices[0]?.message?.content.trim() || "Não foi possível realizar a avaliação.";
+                        aiComplianceAnalysisEl.innerHTML = formatMarkdownToHtml(rawResponse);
                         aiModelNameEl.textContent = result.modelUsed;
                     } catch (error) {
                         console.error("Erro na avaliação de conformidade:", error);
-                        aiComplianceAnalysisEl.textContent = `Ocorreu um erro ao contatar a IA: ${error.message}`;
-                        aiModelNameEl.textContent = "Falha";
+                        const errInfo = parseAiErrorMessage(error);
+                        aiComplianceAnalysisEl.innerHTML = renderAiErrorCard(errInfo);
+                        aiModelNameEl.textContent = "Indisponível";
                     }
                 }
             } else if (!manualEntry) {
@@ -1313,58 +1546,20 @@ document.addEventListener('DOMContentLoaded', () => {
             label.innerHTML = `2.X Resumo comparativo das soluções <span class="summary-badge"><i class="fas fa-magic"></i> Tabela-Resumo gerada automaticamente</span>`;
         }
 
-        function getSummaryDisplayValue(textarea) {
-            if (!textarea) return 'N/P';
-            let val = textarea.value.trim();
-            if (!val) return 'N/P';
-
-            // Captura o marcador sem consumir as quebras de linha do texto circundante
-            const markerRegex = /[═ \t]*\[\s*📊?\s*TABELA INSERIDA:[^\]]*\][═ \t]*|\[Tabela inserida pelo usuário:[^\]]*\]/gi;
-            const hasTable = textarea.dataset.tableHtml || markerRegex.test(val) || val.includes('<table');
-
-            if (hasTable) {
-                // Verifica se há texto além da tabela
-                const textWithoutTable = val
-                    .replace(markerRegex, '')
-                    .replace(/<table[\s\S]*?<\/table>/gi, '')
-                    .trim();
-
-                if (!textWithoutTable) {
-                    return '[Tabela detalhada no item]';
-                }
-
-                // Substitui a tabela exatamente no ponto onde ela foi inserida, preservando quebras de linha
-                let formatted = val
-                    .replace(markerRegex, '[Tabela detalhada]')
-                    .replace(/<table[\s\S]*?<\/table>/gi, '[Tabela detalhada]')
-                    .replace(/\r/g, '')
-                    .replace(/\n{3,}/g, '\n\n')
-                    .trim();
-
-                return smartSubstring(formatted, 160);
-            }
-
-            let formatted = val.replace(/\r/g, '').replace(/\n{3,}/g, '\n\n').trim();
-            return smartSubstring(formatted, 160);
-        }
-
         let rowsData = [];
         document.querySelectorAll('.solucao-item').forEach(item => {
             const descricaoEl = item.querySelector(`textarea[id$="_a_descricao_sucinta"]`);
             if (descricaoEl && descricaoEl.value.trim()) {
                 rowsData.push([
                     item.getAttribute('data-solucao-index') + "ª",
-                    descricaoEl.value.trim(),
-                    getSummaryDisplayValue(item.querySelector(`textarea[id$="_g_custos_estimados"]`)),
-                    getSummaryDisplayValue(item.querySelector(`textarea[id$="_h_vantagens"]`)),
-                    getSummaryDisplayValue(item.querySelector(`textarea[id$="_i_desvantagens"]`)),
+                    descricaoEl.value.trim()
                 ]);
             }
         });
         if (rowsData.length === 0) {
             tableContainer.innerHTML = '<p class="placeholder-text">Nenhuma solução com título preenchido.</p>';
         } else {
-            tableContainer.innerHTML = createSummaryTable(["Nº Solução", "Título da Solução", "Custos Estimados", "Vantagens", "Desvantagens"], rowsData);
+            tableContainer.innerHTML = createSummaryTable(["Nº Solução", "Título da Solução"], rowsData);
         }
     }
 
@@ -1413,18 +1608,15 @@ document.addEventListener('DOMContentLoaded', () => {
                 rowsData.push([
                     item.getAttribute('data-risco-index') + "º",
                     identificacaoEl.value.trim(),
-                    item.querySelector(`textarea[id$="_danos_possiveis"]`)?.value.trim() || 'N/P',
                     item.querySelector(`select[id$="_probabilidade"]`)?.value || 'N/P',
-                    item.querySelector(`select[id$="_impacto"]`)?.value || 'N/P',
-                    item.querySelector(`textarea[id$="_acoes_preventivas"]`)?.value.trim() || 'N/P',
-                    item.querySelector(`textarea[id$="_acoes_contingencia"]`)?.value.trim() || 'N/P'
+                    item.querySelector(`select[id$="_impacto"]`)?.value || 'N/P'
                 ]);
             }
         });
         if (rowsData.length === 0) {
             tableContainer.innerHTML = '<p class="placeholder-text">Nenhum risco com identificação preenchida.</p>';
         } else {
-            tableContainer.innerHTML = createSummaryTable(["Nº", "Identificação", "Danos Possíveis", "Probabilidade", "Impacto", "Ações Preventivas", "Ações de Contingência"], rowsData);
+            tableContainer.innerHTML = createSummaryTable(["Nº", "Identificação do Risco", "Probabilidade", "Impacto"], rowsData);
         }
     }
 
@@ -1448,17 +1640,14 @@ document.addEventListener('DOMContentLoaded', () => {
                 rowsData.push([
                     item.getAttribute('data-contratacao-index') + "ª",
                     contratoNeEl.value.trim(),
-                    item.querySelector(`[id$="_processo_sei"]`)?.value.trim() || 'N/P',
-                    item.querySelector(`[id$="_fase_planejamento"]`)?.value.trim() || 'N/P',
-                    item.querySelector(`[id$="_fase_externa"]`)?.value.trim() || 'N/P',
-                    item.querySelector(`[id$="_dificuldades_execucao"]`)?.value.trim() || 'N/P'
+                    item.querySelector(`[id$="_processo_sei"]`)?.value.trim() || 'N/P'
                 ]);
             }
         });
         if (rowsData.length === 0) {
             tableContainer.innerHTML = '<p class="placeholder-text">Nenhuma contratação anterior com Contrato/NE preenchido.</p>';
         } else {
-            tableContainer.innerHTML = createSummaryTable(["Nº", "Contrato/NE", "Proc. SEI", "Lições - Planejamento", "Lições - Fase Externa", "Dificuldades Execução"], rowsData);
+            tableContainer.innerHTML = createSummaryTable(["Nº", "Nº Contrato / NE", "Nº SEI"], rowsData);
         }
     }
 
@@ -2937,27 +3126,46 @@ document.addEventListener('DOMContentLoaded', () => {
         testConnectionResult.style.display = 'block';
         testApiConnectionButton.disabled = true;
 
-        const testPromises = modelsToTest.map(model =>
-            fetch(GROQ_API_URL, {
-                method: 'POST',
-                headers: { 'Authorization': `Bearer ${apiKey}`, 'Content-Type': 'application/json' },
-                body: JSON.stringify({ model: model, messages: [{ role: "user", content: "Olá" }], max_tokens: 2 })
-            }).then(response => ({ model, success: response.ok, status: response.status }))
-                .catch(error => ({ model, success: false, status: 'Network Error' }))
-        );
+        const testPromises = modelsToTest.map(async model => {
+            try {
+                const response = await fetch(GROQ_API_URL, {
+                    method: 'POST',
+                    headers: { 'Authorization': `Bearer ${apiKey}`, 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ model: model, messages: [{ role: "user", content: "Olá" }], max_tokens: 2 })
+                });
+
+                if (response.ok) {
+                    return { model, success: true };
+                }
+
+                const errBody = await response.text();
+                let detail = "";
+                try {
+                    const parsed = JSON.parse(errBody);
+                    detail = parsed?.error?.message || "";
+                } catch (e) {}
+
+                const err = new Error(detail || response.statusText);
+                err.status = response.status;
+                err.rawMessage = detail;
+                return { model, success: false, info: parseAiErrorMessage(err) };
+            } catch (networkError) {
+                return { model, success: false, info: parseAiErrorMessage(networkError) };
+            }
+        });
 
         const results = await Promise.allSettled(testPromises);
 
         let successCount = 0;
-        let resultHtml = '<strong>Resultado do Teste:</strong><ul>';
+        let resultHtml = '<strong>Resultado do Teste:</strong><ul class="info-list" style="margin-top: 8px;">';
 
-        results.forEach(result => {
-            if (result.status === 'fulfilled' && result.value.success) {
+        results.forEach(res => {
+            if (res.status === 'fulfilled' && res.value.success) {
                 successCount++;
-                resultHtml += `<li><i class="fas fa-check-circle" style="color: green;"></i> <strong>${result.value.model}:</strong> Conectado com sucesso!</li>`;
+                resultHtml += `<li><i class="fas fa-check-circle" style="color: #28a745;"></i> <strong>${res.value.model}:</strong> Conectado e pronto para uso!</li>`;
             } else {
-                const status = result.status === 'fulfilled' ? result.value.status : 'Erro de Rede';
-                resultHtml += `<li><i class="fas fa-times-circle" style="color: red;"></i> <strong>${result.value.model}:</strong> Falhou (Status: ${status})</li>`;
+                const info = res.value?.info || { title: "Falha", message: "Erro desconhecido" };
+                resultHtml += `<li><i class="fas fa-times-circle" style="color: #dc3545;"></i> <strong>${res.value.model}:</strong> ${info.title} — <em>${info.message}</em></li>`;
             }
         });
         resultHtml += '</ul>';
@@ -3138,8 +3346,16 @@ document.addEventListener('DOMContentLoaded', () => {
             });
         }
 
-        // Listener para formatação do campo SEI
-        document.getElementById('etp_numero_processo_sei').addEventListener('input', (e) => formatSEIProcess(e.target));
+        // Listener delegado para formatação dos campos de processo SEI e moeda (Item 4.3)
+        document.body.addEventListener('input', (e) => {
+            if (e.target && e.target.id) {
+                if (e.target.id === 'etp_numero_processo_sei' || e.target.id.includes('_processo_sei')) {
+                    formatSEIProcess(e.target);
+                } else if (e.target.id === 'c4_3_valor_total_estimado') {
+                    formatBRLCurrency(e.target);
+                }
+            }
+        });
 
         // Listener para fechar modais
         window.onclick = function (event) {
